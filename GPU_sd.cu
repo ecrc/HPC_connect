@@ -1,4 +1,4 @@
-/*
+/* 
  GPU-multi-level version with Real matrix representation
 we are not doing batching here
 single precision gemm ... works
@@ -8,7 +8,7 @@ optimised gpu kernels for mat a,b,c  (2*pas x 2*pas)// 2*pas x l111*nb_parallel 
 norme plus sorting kernel
 multiple selected nodes at at time
 works well
-*/
+*/ 
 #include <iomanip>
 #include <cuda.h>
 #include <stdio.h>
@@ -37,7 +37,7 @@ works well
 
 #include <cuda_fp16.h>
 
-#define FP16MM
+//#define FP16MM
 
 using namespace std;
 
@@ -70,7 +70,6 @@ public:
         evaluation = eval;
     }
 };
-// FP16MM
 __device__ float partial_mul[400];
 __device__ __half H_partial_mul[400];
 __global__ void vecMul_v1(float *A, float *gpu_r_adf_in, int nb_node_parallel, int dim1, int pas, int level, float *gpu_y_modulation)
@@ -106,12 +105,12 @@ __global__ void vecMul_v1(float *A, float *gpu_r_adf_in, int nb_node_parallel, i
         if ((tid < 512))
             if ((tid + 512) < 2 * dim1)
             {
-#ifndef FP16MM
+#ifndef FP16MM  
                 sh_b[tid] = sh_b[tid] + sh_b[tid + 512];
 #else
                 sh_b[tid] = __hadd(sh_b[tid], sh_b[tid + 512]);
 #endif
-            }
+            } 
         __syncthreads();
     }
     if (2 * dim1 > 256)
@@ -3210,4 +3209,4 @@ int main(int argc, char *argv[])
     }
 
     return 0;
-}
+}    
