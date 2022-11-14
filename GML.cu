@@ -1,14 +1,14 @@
-/* 
- GPU-multi-level version with Real matrix representation
-we are not doing batching here
+/*
+GPU-multi-level
 single precision gemm ... works
-half precision gemm .... works .... to enable it uncomment #define FP16MM
-qam modulation ..... here
-optimised gpu kernels for mat a,b,c  (2*pas x 2*pas)// 2*pas x l111*nb_parallel // 2*pasx *l111*nb_parallel
-norme plus sorting kernel
-multiple selected nodes at at time
-works well
-*/ 
+export OMP_NUM_THREADS=1; ./int_version_test 100 100 4 100 64 s
+half precision gemm .... works
+export OMP_NUM_THREADS=1; ./int_version_test 100 100 4 100 64 h
+interger precision ... works
+export OMP_NUM_THREADS=1; ./int_version_test 100 100 4 100 64 i
+*/
+#include <iostream>
+using namespace std;
 #include <iomanip>
 #include <cuda.h>
 #include <stdio.h>
@@ -19,11 +19,11 @@ works well
 #include <cuda.h>
 #include <iostream>
 #include <cuComplex.h>
-//#include <cublas.h>
+// #include <cublas.h>
 #include <boost/multi_array.hpp>
 #include <mkl.h>
 #include <mkl_lapacke.h>
-//#include <list>
+// #include <list>
 #include <vector>
 #include <iterator>
 #include <cublas_v2.h>
@@ -36,19 +36,18 @@ works well
 #include <iterator>
 
 #include <cuda_fp16.h>
-<<<<<<< HEAD
-
-=======
- 
->>>>>>> main
-//#define FP16MM
-
+#include "helper.cuh"
+#include "helper_fp16.cuh"
+using namespace helper;
+using namespace helper_fp16;
 using namespace std;
 
 int modulation = 2; // 2 4 16 64
 int nTx, nRx, Iter = 0, steps = 1, nb_nodes = 300, nb_threads = 1;
 int incremental = 1;
-int parallel_nodes; // nodes treated in parallel and sorting size
+int parallel_nodes;
+int _precision = 1; // 1 int8 2 fp32 3 fp16
+// nodes treated in parallel and sorting size
 vector<cuFloatComplex> BPSK, qam4, qam16, qam64;
 vector<cuFloatComplex> Constellation_symbols;
 int strategy_exploration = 1;
@@ -75,46 +74,28 @@ public:
     }
 };
 __device__ float partial_mul[400];
-__device__ __half H_partial_mul[400];
 __global__ void vecMul_v1(float *A, float *gpu_r_adf_in, int nb_node_parallel, int dim1, int pas, int level, float *gpu_y_modulation)
 {
     int tid = threadIdx.x;
-#ifndef FP16MM
     __shared__ float sh_b[1200];
-#else
-    __shared__ __half sh_b[1200];
-#endif
 
     int ind = (dim1 * 2) - 2 * level - (2 * pas);
     int j = blockIdx.x % (2 * pas);
     int i = blockIdx.x / (2 * pas);
-#ifndef FP16MM
     float va = gpu_r_adf_in[(j + ind) * dim1 * 2 + tid];
     float vb = A[i * dim1 * 2 + tid];
-#else
-    __half va = __float2half(gpu_r_adf_in[(j + ind) * dim1 * 2 + tid]);
-    __half vb = __float2half(A[i * dim1 * 2 + tid]);
-#endif
 
     if (level == 0)
         vb = 0;
-#ifndef FP16MM
     sh_b[tid] = va * vb;
-#else
-    sh_b[tid] = __hmul(va, vb);
-#endif
     __syncthreads();
     if (2 * dim1 > 512)
     {
         if ((tid < 512))
             if ((tid + 512) < 2 * dim1)
             {
-#ifndef FP16MM  
                 sh_b[tid] = sh_b[tid] + sh_b[tid + 512];
-#else
-                sh_b[tid] = __hadd(sh_b[tid], sh_b[tid + 512]);
-#endif
-            } 
+            }
         __syncthreads();
     }
     if (2 * dim1 > 256)
@@ -122,11 +103,7 @@ __global__ void vecMul_v1(float *A, float *gpu_r_adf_in, int nb_node_parallel, i
         if ((tid < 256))
             if ((tid + 256) < 2 * dim1)
             {
-#ifndef FP16MM
                 sh_b[tid] = sh_b[tid] + sh_b[tid + 256];
-#else
-                sh_b[tid] = __hadd(sh_b[tid], sh_b[tid + 256]);
-#endif
             }
         __syncthreads();
     }
@@ -135,11 +112,7 @@ __global__ void vecMul_v1(float *A, float *gpu_r_adf_in, int nb_node_parallel, i
         if ((tid < 128))
             if ((tid + 128) < 2 * dim1)
             {
-#ifndef FP16MM
                 sh_b[tid] = sh_b[tid] + sh_b[tid + 128];
-#else
-                sh_b[tid] = __hadd(sh_b[tid], sh_b[tid + 128]);
-#endif
             }
         __syncthreads();
     }
@@ -148,11 +121,7 @@ __global__ void vecMul_v1(float *A, float *gpu_r_adf_in, int nb_node_parallel, i
         if ((tid < 64))
             if ((tid + 64) < 2 * dim1)
             {
-#ifndef FP16MM
                 sh_b[tid] = sh_b[tid] + sh_b[tid + 64];
-#else
-                sh_b[tid] = __hadd(sh_b[tid], sh_b[tid + 64]);
-#endif
             }
         __syncthreads();
     }
@@ -161,11 +130,7 @@ __global__ void vecMul_v1(float *A, float *gpu_r_adf_in, int nb_node_parallel, i
         if ((tid < 32))
             if ((tid + 32) < 2 * dim1)
             {
-#ifndef FP16MM
                 sh_b[tid] = sh_b[tid] + sh_b[tid + 32];
-#else
-                sh_b[tid] = __hadd(sh_b[tid], sh_b[tid + 32]);
-#endif
             }
         __syncthreads();
     }
@@ -174,11 +139,8 @@ __global__ void vecMul_v1(float *A, float *gpu_r_adf_in, int nb_node_parallel, i
         if ((tid < 16))
             if ((tid + 16) < 2 * dim1)
             {
-#ifndef FP16MM
+
                 sh_b[tid] = sh_b[tid] + sh_b[tid + 16];
-#else
-                sh_b[tid] = __hadd(sh_b[tid], sh_b[tid + 16]);
-#endif
             }
         __syncthreads();
     }
@@ -187,11 +149,8 @@ __global__ void vecMul_v1(float *A, float *gpu_r_adf_in, int nb_node_parallel, i
         if ((tid < 8))
             if ((tid + 8) < 2 * dim1)
             {
-#ifndef FP16MM
+
                 sh_b[tid] = sh_b[tid] + sh_b[tid + 8];
-#else
-                sh_b[tid] = __hadd(sh_b[tid], sh_b[tid + 8]);
-#endif
             }
         __syncthreads();
     }
@@ -200,11 +159,7 @@ __global__ void vecMul_v1(float *A, float *gpu_r_adf_in, int nb_node_parallel, i
         if ((tid < 4))
             if ((tid + 4) < 2 * dim1)
             {
-#ifndef FP16MM
                 sh_b[tid] = sh_b[tid] + sh_b[tid + 4];
-#else
-                sh_b[tid] = __hadd(sh_b[tid], sh_b[tid + 4]);
-#endif
             }
         __syncthreads();
     }
@@ -213,11 +168,7 @@ __global__ void vecMul_v1(float *A, float *gpu_r_adf_in, int nb_node_parallel, i
         if ((tid < 2))
             if ((tid + 2) < 2 * dim1)
             {
-#ifndef FP16MM
                 sh_b[tid] = sh_b[tid] + sh_b[tid + 2];
-#else
-                sh_b[tid] = __hadd(sh_b[tid], sh_b[tid + 2]);
-#endif
             }
         __syncthreads();
     }
@@ -226,58 +177,18 @@ __global__ void vecMul_v1(float *A, float *gpu_r_adf_in, int nb_node_parallel, i
         if ((tid < 1))
             if ((tid + 1) < 2 * dim1)
             {
-#ifndef FP16MM
                 sh_b[tid] = sh_b[tid] + sh_b[tid + 1];
-#else
-                sh_b[tid] = __hadd(sh_b[tid], sh_b[tid + 1]);
-#endif
             }
         __syncthreads();
     }
 
     if (tid == 0)
     {
-
-#ifndef FP16MM
         partial_mul[i * 2 * pas + j] = sh_b[0] - gpu_y_modulation[ind + j];
-#else
-        H_partial_mul[i * 2 * pas + j] = __hsub(sh_b[0], __float2half(gpu_y_modulation[ind + j]));
-#endif
     }
 }
 
-__global__ void print_gpu_mat_colomn_major(float *mat, int nbrows, int nb_columns)
-{ // one thread only
-    printf("\ncolomn major gpu begin\n");
-    for (int i = 0; i < nbrows; i++)
-    {
-        printf("\n");
-        for (int j = 0; j < nb_columns; j++)
-        {
-            printf(" %f", mat[j * nbrows + i]);
-        }
-    }
-    printf("\ninside the gpu end\n");
-}
-
-__global__ void prepare_mat_A(float *vec, float *d_mat_B, int nb_copies, int level, int pas, int dim1, int dim2, cuFloatComplex *gpu_comb, float *gpu_r_adf_in, float *d_matrix_A, float *d_matrix_A1, float *y_cpu_modulation, int modulation, float *d_matrix_C, int nb_node_parallel)
-{
-    int gl_id = threadIdx.x + blockDim.x * blockIdx.x;
-    // int tid = threadIdx.x;
-    // if(tid==0)for (int i=0;i<10;i++)printf("pmul:%f ", partial_mul[i]);
-    if (gl_id < 2 * dim1)
-    {
-
-        int ind = (dim1 * 2) - 2 * level - (2 * pas);
-
-        for (int j = 0; j < 2 * pas; j++)
-        {
-            int target = (j + ind) * dim1 * 2 + gl_id;
-            d_matrix_A1[gl_id * 2 * pas + j] = gpu_r_adf_in[target];
-        }
-    }
-}
-__global__ void p_new_mat_A(float *new_mat_A, int level, int pas, int dim1, int dim2, float *gpu_r_adf_in, __half *A)
+__global__ void p_new_mat_A(float *new_mat_A, int level, int pas, int dim1, int dim2, float *gpu_r_adf_in, __half *A, int _precision)
 {
     int gl_id = threadIdx.x + blockDim.x * blockIdx.x;
     //  int tid = threadIdx.x;
@@ -290,253 +201,15 @@ __global__ void p_new_mat_A(float *new_mat_A, int level, int pas, int dim1, int 
         for (int j = 0; j < 2 * pas; j++)
         {
             int target = (j + ind) * dim1 * 2 + (2 * dim1 - 2 * level - 2 * pas) + gl_id;
-#ifndef FP16MM
-            new_mat_A[gl_id * 2 * pas + j] = gpu_r_adf_in[target];
-#else
-            A[gl_id * 2 * pas + j] = __float2half(gpu_r_adf_in[target]);
-#endif
-        }
-    }
-}
 
-
-__global__ void p_new_mat_C(int nb_copies, int level, int pas, int dim1, int dim2, float *y_cpu_modulation, float *new_mat_C, int nb_node_parallel, __half *C)
-{
-
-    int gl_id = threadIdx.x + blockDim.x * blockIdx.x;
-    int r_p = gl_id % (2 * pas);
-    int max_threads = blockDim.x * gridDim.x;
-    int nb_b = max_threads / (pas * 2);
-    int ind = (dim2 * 2) - 2 * level - (2 * pas);
-    float x = 0;
-
-    if (gl_id < (nb_copies * nb_node_parallel) * pas * 2)
-        x = y_cpu_modulation[ind + r_p];
-    __syncthreads();
-    int d = 0;
-    int r = 0;
-    while (d < nb_copies * nb_node_parallel)
-    {
-        r = nb_b;
-
-        if (d + nb_b > nb_copies * nb_node_parallel)
-        {
-            r = (nb_copies * nb_node_parallel) - d;
-        }
-        if (gl_id < (r)*pas * 2)
-        { // x=local[tid];
-            __syncthreads();
-#ifndef FP16MM
-            new_mat_C[d * pas * 2 + gl_id] = x;
-#else
-            C[d * pas * 2 + gl_id] = __float2half(x);
-#endif
-        }
-
-        d = d + nb_b;
-        // __syncthreads();
-    }
-}
-
-__global__ void prepare_mat_C(float *vec, float *d_mat_B, int nb_copies, int level, int pas, int dim1, int dim2, float *y_cpu_modulation, float *d_matrix_C, int nb_node_parallel)
-{
-    int gl_id = threadIdx.x + blockDim.x * blockIdx.x;
-    //  int tid = threadIdx.x;
-    int r_p = gl_id % (2 * pas);
-    int max_threads = blockDim.x * gridDim.x;
-    int nb_b = max_threads / (pas * 2);
-    int ind = (dim2 * 2) - 2 * level - (2 * pas);
-    float x = 0;
-
-    if (gl_id < (nb_copies * nb_node_parallel) * pas * 2)
-        x = y_cpu_modulation[ind + r_p];
-    __syncthreads();
-    int d = 0;
-    while (d < nb_copies * nb_node_parallel)
-    {
-        int r = nb_b;
-
-        if (d + nb_b > nb_copies * nb_node_parallel)
-        {
-            r = (nb_copies * nb_node_parallel) - d;
-        }
-        if (gl_id < (r)*pas * 2)
-        { // x=local[tid];
-            __syncthreads();
-            d_matrix_C[d * pas * 2 + gl_id] = x;
-        }
-
-        d = d + nb_b;
-    }
-}
-__global__ void prepare_mat_B1(float *vec, float *d_mat_B, float *d_mat_B_1, int nb_copies, int level, int pas, int dim1, int dim2, cuFloatComplex *gpu_comb, float *gpu_r_adf_in, float *d_matrix_A, float *d_matrix_A1, float *y_cpu_modulation, int modulation, float *d_matrix_C, int nb_node_parallel)
-{
-    int gl_id = threadIdx.x + blockDim.x * blockIdx.x;
-    int r_p = gl_id % (2 * dim1);
-    int max_threads = blockDim.x * gridDim.x;
-    int nb_b = max_threads / (dim1 * 2);
-    int p0 = 2 * dim1 - 2 - (2 * level) + 1;
-    int p1 = 2 * dim1 - 2 - (2 * level) - 2 * (pas - 1);
-    for (int j = 0; j < nb_node_parallel; j++)
-    {
-        float x = 0;
-        if (level != 0)
-            x = vec[j * (2 * dim1) + r_p];
-        int d = 0;
-        while (d < (nb_copies))
-        {
-            int r = nb_b;
-
-            if (d + nb_b > (nb_copies))
+            if (_precision == 3)
             {
-                r = (nb_copies)-d;
+                A[gl_id * 2 * pas + j] = __float2half(gpu_r_adf_in[target]);
             }
-            if (gl_id < (r)*dim1 * 2)
+            else
             {
-                if (r_p >= p1 && r_p <= p0)
-                {
-                    int position = d + gl_id / (2 * dim1);
-
-                    int i1 = p0 - r_p;
-
-                    float xx;
-                    cuFloatComplex l = gpu_comb[(int)(position)*pas + i1 / 2];
-                    xx = cuCrealf(l);
-                    if (i1 % 2 == 0)
-                        xx = cuCimagf(l);
-                    x = xx;
-                }
-
-                __syncthreads();
-                d_mat_B[j * nb_copies * dim1 * 2 + d * dim1 * 2 + gl_id] = x;
+                new_mat_A[gl_id * 2 * pas + j] = gpu_r_adf_in[target];
             }
-
-            d = d + nb_b;
-        }
-    }
-}
-
-__global__ void prepare_mat_C(float *vec, float *d_mat_B, int nb_copies, int level, int pas, int dim1, int dim2, cuFloatComplex *gpu_comb, float *gpu_r_adf_in, float *d_matrix_A, float *d_matrix_A1, float *y_cpu_modulation, int modulation, float *d_matrix_C, int nb_node_parallel)
-{
-    int gl_id = threadIdx.x + blockDim.x * blockIdx.x;
-    int r_p = gl_id % (2 * pas);
-    int max_threads = blockDim.x * gridDim.x;
-    int nb_b = max_threads / (pas * 2);
-    int ind = (dim2 * 2) - 2 * level - (2 * pas);
-    float x = 0;
-
-    if (gl_id < (nb_copies * nb_node_parallel) * pas * 2)
-        x = y_cpu_modulation[ind + r_p];
-    __syncthreads();
-    int d = 0;
-    while (d < nb_copies * nb_node_parallel)
-    { 
-        int r = nb_b;
-
-        if (d + nb_b > nb_copies * nb_node_parallel)
-        {
-            r = (nb_copies * nb_node_parallel) - d;
-        }
-        if (gl_id < (r)*pas * 2)
-        {
-            __syncthreads();
-            d_matrix_C[d * pas * 2 + gl_id] = x;
-        }
-
-        d = d + nb_b;
-    }
-}
-
-__global__ void prepare_matrices(float *vec, float *d_mat_B, int nb_copies, int level, int pas, int dim1, int dim2, cuFloatComplex *gpu_comb, float *gpu_r_adf_in, float *d_matrix_A, float *d_matrix_A1, float *y_cpu_modulation, int modulation, float *d_matrix_C, int nb_node_parallel)
-{
-
-    int gl_id = threadIdx.x + blockDim.x * blockIdx.x;
-
-    if (gl_id < 2 * dim1)
-    {
-
-        int ind = (dim1 * 2) - 2 * level - (2 * pas);
-
-        for (int j = 0; j < 2 * pas; j++)
-        {
-            int target = (j + ind) * dim1 * 2 + gl_id;
-            d_matrix_A1[gl_id * 2 * pas + j] = gpu_r_adf_in[target];
-        }
-    }
-
-    /* Matrix B combinations*/
-
-    __shared__ float node_vec[1000];
-    if (2 * 2 * dim1 > 1000)
-        printf("\n erreur size of reserved shared memory is not enough \n");
-    __syncthreads();
-
-    for (int j = 0; j < nb_node_parallel; j++)
-    {
-        if (gl_id < 2 * dim1)
-        {
-            float x = vec[j * (2 * dim1) + gl_id];
-            // node_vec[threadIdx.x]=x;
-
-            for (int i = 0; i < nb_copies; i++)
-            {
-                int ind = j * (nb_copies * (2 * dim1)) + i * dim1 * 2 + gl_id;
-                d_mat_B[ind] = x;
-            }
-        }
-        __syncthreads();
-    }
-
-    __syncthreads();
-    if (gl_id < 2 * 2 * dim1)
-    {
-
-        for (int j = 0; j < nb_node_parallel; j++)
-        {
-            for (int i = 0; i < nb_copies / blockDim.x + 1; i++)
-            {
-                int position = (gl_id + (i * blockDim.x));
-                if (position < nb_copies)
-                { // printf("\n position:%d\n", position);
-                    for (int i1 = 0; i1 < pas; i1++)
-                    {
-                        int p1 = 0, p2 = 0;
-                        float f = 1;
-                        // if(position%2==0)
-                        {
-                            p1 = j * nb_copies * (2 * dim1) + position * 2 * dim1 + 2 * dim1 - 2 - (2 * level) - 2 * i1;
-                            p2 = j * nb_copies * (2 * dim1) + position * 2 * dim1 + 2 * dim1 - 2 - (2 * level) - 2 * i1 + 1;
-                            f = 1;
-                        }
-                        d_mat_B[p1] = cuCrealf(gpu_comb[(int)(position)*pas + i1]);
-                        d_mat_B[p2] = f * cuCimagf(gpu_comb[(int)(position)*pas + i1]);
-                    }
-                }
-            }
-        }
-    }
-
-    // Matrix C
-    __syncthreads();
-
-    int ind = (dim2 * 2) - 2 * level - (2 * pas);
-    if (gl_id < 2 * pas)
-    {
-        node_vec[gl_id] = y_cpu_modulation[ind + gl_id];
-        node_vec[gl_id + 2 * pas] = node_vec[gl_id];
-        node_vec[gl_id + 4 * pas] = node_vec[gl_id];
-        node_vec[gl_id + 6 * pas] = node_vec[gl_id];
-    }
-
-    __syncthreads();
-
-    if (gl_id < 8 * pas)
-    {
-        for (int f = 0; f < nb_copies * nb_node_parallel; f = f + 4)
-        {
-
-            __syncthreads();
-            d_matrix_C[f * 4 * 2 * pas + gl_id] = node_vec[gl_id];
         }
     }
 }
@@ -1006,14 +679,16 @@ __global__ void final_NORM(float *vec, int *best_nd, float *eval1, int sort_size
     //   if(gl_id==0){ for(int i=0;i<2*dim1*sort_size;i++){ if(i%(2*dim1)==0)printf("\n best :%d\n",i/(2*dim1));if(vec[i]!=local_norme[i]) printf("\nblock: %d i %d vec:%f ln:%f",blockDim.x, i, vec[i], local_norme[i]);}
     // printf ("\n =========================================final sort fin===============\n");}
 }
-
+template <typename D>
 __global__ void NORM(float *d_mat_C, int l111, int l1, int pas, float *d_norme, float eval, int *best_nd, float *eval1, int sort_size,
                      const float *d_mat_B, float *vec, int dim1, unsigned int blockSize, float *new_mat_C,
-                     const float *new_mat_B, int level, __half *C_half)
+                     const float *new_mat_B, int level, __half *C_half, D *C_ptr_, int _precision)
 {
     //  int best = -1;
     __shared__ float local_norme[128];
     __shared__ int local_id[128];
+    __half x_h = 0;
+    float x = 0;
     // int p = 0;
     int gl_id = threadIdx.x + blockDim.x * blockIdx.x;
     //  if(gl_id==0)printf("\n G GPU norme in");
@@ -1040,20 +715,34 @@ __global__ void NORM(float *d_mat_C, int l111, int l1, int pas, float *d_norme, 
             {
 
                 int p_mul = (ind / l111) * 2 * pas + h;
-#ifndef FP16MM
-                float x = new_mat_C[ind * 2 * pas + h] - partial_mul[p_mul];
-#else
-                __half x = __hsub(C_half[ind * 2 * pas + h], H_partial_mul[p_mul]); //__half2float(C_half[ind * 2 * pas + h]) - __half2float(H_partial_mul[p_mul]);
-                                                                                    //    if(gl_id==0) printf("v:%f \n",__half2float(C_half[ind*2*pas+h]));
-#endif
+
+                if (_precision == 3)
+                {
+                    x_h = __hsub(C_half[ind * 2 * pas + h], H_partial_mul[p_mul]); //__half2float(C_half[ind * 2 * pas + h]) - __half2float(H_partial_mul[p_mul]);
+                                                                                   //    if(gl_id==0) printf("v:%f \n",__half2float(C_half[ind*2*pas+h]));
+                }
+                else
+                {
+                    if (_precision == 1)
+                    {
+                        x = -__int2float_rd(C_ptr_[ind * 2 * pas + h]) / (float)d_scale - partial_mul[p_mul];
+                    }
+                    else if (_precision == 2)
+                    {
+                        x = C_ptr_[ind * 2 * pas + h] - partial_mul[p_mul];
+                    }
+                }
                 //  if(ind==100280)printf("\nnew kernel ind 100280 h:%d ids:%d posiyion:%d , max:%d", h,ind_Block, ind_Block+threadIdx.x, l111*l1*2*pas);
 
-#ifndef FP16MM
-                summ = summ + x * x;
-#else
+                if (_precision == 3)
+                {
 
-                summ = summ + __half2float(__hmul(x, x));
-#endif
+                    summ = summ + __half2float(__hmul(x_h, x_h));
+                }
+                else
+                {
+                    summ = summ + x * x;
+                }
             }
 
         if (summ < my_normes[0])
@@ -1132,10 +821,10 @@ __global__ void NORM(float *d_mat_C, int l111, int l1, int pas, float *d_norme, 
         Ni_best[blockIdx.x * 2 + tid + 1] = local_id[tid + blockDim.x];
     }
 }
-
+template <typename D>
 __global__ void G_GPU_norme_4(float *d_mat_C, int l111, int l1, int pas, float *d_norme, float eval, int *best_nd, float *eval1, int sort_size,
                               const float *d_mat_B, float *vec, int dim1, unsigned int blockSize, float *new_mat_C,
-                              const float *new_mat_B, int level, __half *C_half)
+                              const float *new_mat_B, int level, __half *C_half, D *C_ptr_, int _precision)
 {
     //  int best = -1;
     extern __shared__ float local_norme[];
@@ -1171,12 +860,21 @@ __global__ void G_GPU_norme_4(float *d_mat_C, int l111, int l1, int pas, float *
             {
                 float x = 0;
                 int p_mul = (ind / l111) * 2 * pas + h;
-#ifndef FP16MM
-                x = new_mat_C[ind * 2 * pas + h] - partial_mul[p_mul];
-#else
-                x = __half2float(C_half[ind * 2 * pas + h]) - __half2float(H_partial_mul[p_mul]);
-
-#endif
+                if (_precision == 3)
+                {
+                    x = __half2float(C_half[ind * 2 * pas + h]) - __half2float(H_partial_mul[p_mul]);
+                }
+                else
+                {
+                    if (pas == 1)
+                    {
+                        x = new_mat_C[ind * 2 * pas + h] - partial_mul[p_mul];
+                    }
+                    else
+                    {
+                        x = -__int2float_rd(C_ptr_[ind * 2 * pas + h]) / (float)d_scale - partial_mul[p_mul];
+                    }
+                }
 
                 summ = summ + x * x;
             }
@@ -1779,22 +1477,6 @@ int nerb(float is, float ir, int nb)
     return e;
 }
 
-int error(cuFloatComplex s, cuFloatComplex rs, int nbit)
-{
-    int err = 0, nb = nbit / 2;
-    if (nb == 0)
-        nb++;
-    if (cuCrealf(s) != cuCrealf(rs))
-    {
-        err = err + nerb(cuCrealf(s), cuCrealf(rs), nb);
-    }
-    if (cuCimagf(s) != cuCimagf(rs))
-    {
-        err = err + nerb(cuCimagf(s), cuCimagf(rs), nb);
-    }
-    return err;
-}
-
 vector<int_fast8_t> Branching_combinations(int mod, int pas)
 {
     if (mod == 2)
@@ -2031,67 +1713,11 @@ vector<cuFloatComplex> constellation(int mod, int pas)
     return B1;
 }
 
-float kernel1(cuFloatComplex *G, int k, int pas, int j, int l1, int l11) // calcul de la norme au carre
-{
-    float sum = 0;
-    //  #pragma unroll
-    //  #pragma omp parallel for
-    for (int h = 0; h < (k + pas); h++) // sum = sum + pow(cuCrealf(G[h*(l1*l11)+j]),2) + pow(cuCimagf(G[h*(l1*l11)+j]),2);
-    {
-        sum = sum + pow(cuCrealf(G[h * (l1 * l11) + j]), 2) + pow(cuCimagf(G[h * (l1 * l11) + j]), 2);
-    }
-    return sum;
-}
-
-bool myfunction(const position &i,
-                const position &j)
-{
-    return (i.score > j.score);
-}
-int IDX2C(int i, int j, int ld)
-{
-
-    return (((j) * (ld)) + (i));
-}
-vector<int> norme2(cuFloatComplex *G3, float *Poids, int k, int pas, float d, int l1, int l11, float eval1, int exploration)
-{
-
-    vector<int> next;
-    vector<position> next_position;
-    float x = 0.0;
-
-    for (int j = 0; j < l11; j++)
-    {
-        x = kernel1(G3, k, pas, j, l1, l11);
-        x = x + eval1; // version inc update
-
-        Poids[j] = x;
-        if (x < d)
-        {
-            if (exploration != 1)
-            {
-                next.push_back(j);
-            }
-            else
-            {
-                position p;
-                p.indice = j;
-                p.score = x; /* next.push_back(j);*/
-                next_position.push_back(p);
-            }
-        }
-    }
-    // if (exploration == 1)
-    sort(next_position.begin(), next_position.end(), myfunction);
-    for (int i = 0; i < next_position.size(); i++)
-        next.push_back(next_position[i].indice);
-    return next;
-}
 vector<cuFloatComplex> complex_v_best;
 vector<position> real_norme3(float *G, float *Poids, int k, int pas, float d, int l1, int l11, float *eval1, int exploration, float *d_matrix_C, float *d_norme, int *best_nd, int nb_node_par,
                              const float *d_mat_B, float *vec, int dim1, int level, float *new_mat_C,
                              const float *new_mat_B, int l111,
-                             const float *new_mat_B_1pas, __half *C_half)
+                             const float *new_mat_B_1pas, __half *C_half, int32_t *C_ptr_)
 {
     // float best1 = d, best2 = d, best3 = d;q
     vector<int> next;
@@ -2129,16 +1755,16 @@ vector<position> real_norme3(float *G, float *Poids, int k, int pas, float d, in
     {
         if (l11 > 1024)
         {
-            NORM<<<(l11 * nb_node_par) / nit, 64>>>(d_matrix_C, l11, nb_node_par, pas, d_norme, 0, best_nd, eval1, sort_size, d_mat_B, vec, dim1, size, new_mat_C, new_mat_B, level, C_half);
+            NORM<<<(l11 * nb_node_par) / nit, 64>>>(d_matrix_C, l11, nb_node_par, pas, d_norme, 0, best_nd, eval1, sort_size, d_mat_B, vec, dim1, size, new_mat_C, new_mat_B, level, C_half, new_mat_C, _precision /*C_ptr_*/);
         }
         else
         {
-            G_GPU_norme_4<<<nb_block, nb_t, 2 * size_shared * sizeof(float)>>>(d_matrix_C, l11, nb_node_par, pas, d_norme, 0, best_nd, eval1, sort_size, d_mat_B, vec, dim1, size, new_mat_C, new_mat_B, level, C_half);
+            G_GPU_norme_4<<<nb_block, nb_t, 2 * size_shared * sizeof(float)>>>(d_matrix_C, l11, nb_node_par, pas, d_norme, 0, best_nd, eval1, sort_size, d_mat_B, vec, dim1, size, new_mat_C, new_mat_B, level, C_half, new_mat_C /*C_ptr_*/, _precision);
         }
     }
     else
     {
-        G_GPU_norme_4<<<nb_block, nb_t, 2024 * sizeof(float)>>>(d_matrix_C, l11, nb_node_par, pas, d_norme, 0, best_nd, eval1, sort_size, d_mat_B, vec, dim1, size, new_mat_C, new_mat_B_1pas, level, C_half);
+        G_GPU_norme_4<<<nb_block, nb_t, 2024 * sizeof(float)>>>(d_matrix_C, l11, nb_node_par, pas, d_norme, 0, best_nd, eval1, sort_size, d_mat_B, vec, dim1, size, new_mat_C, new_mat_B_1pas, level, C_half, new_mat_C /*C_ptr_*/, _precision);
     }
     if (nb_block > 1)
     {
@@ -2192,16 +1818,12 @@ float real_node_evaluation(vector<tree_node> &list_node, vector<tree_node> &list
                            const float *new_mat_B, float *new_mat_C, float *new_mat_B_1pas,
                            const __half *A_half,
                            const __half *B_half, __half *C_half,
-                           const __half *B1_half)
+                           const __half *B1_half, int jk)
 {
 
-    // printf ("\n evaluation nb par;%d l111:%d pas:%d\n", nb_node_parallel,l111,pas);
-
     float *result_vec;
-    //(float *)malloc(nb_node_parallel * 2 * l111 * dim1 * 2 * sizeof(float));
-
     float dd = d1;
-    float *Poids2; //= (float *)malloc(nb_node_parallel* l111 * sizeof(float));
+    float *Poids2;
     vector<int> next;
     vector<position> next22;
 
@@ -2217,37 +1839,58 @@ float real_node_evaluation(vector<tree_node> &list_node, vector<tree_node> &list
     const __half *H_alpha = &alf_H;
     const __half *H_beta = &bet_H;
 
-    /*matrix matrix multiplication on GPU single and half precision*/
-
+    /*matrix matrix multiplication on GPU single and half and INT8 precisions*/
+    cudaEvent_t start, stop;
+    cudaEventCreate(&start);
+    cudaEventCreate(&stop);
+    cudaEventRecord(start, 0);
     if (pas != 1)
     {
-#ifndef FP16MM
-        cublasSgemm(handle, CUBLAS_OP_N, CUBLAS_OP_N, 2 * pas, l111 * nb_node_parallel, 2 * pas, alpha, new_mat_A, 2 * pas, new_mat_B, 2 * pas, beta, new_mat_C, 2 * pas);
-//   cublasSgemmStridedBatched(handle, CUBLAS_OP_N, CUBLAS_OP_N, 2 * pas, l111*nb_node_parallel/batch_count ,2 * pas,alpha,aa, 2*pas,strideA,new_mat_B, 2*pas,strideB, beta, new_mat_C,2*pas,strideC, batch_count);
-#else
-        cublasHgemm(handle, CUBLAS_OP_N, CUBLAS_OP_N, 2 * pas, l111 * nb_node_parallel, 2 * pas, H_alpha, A_half, 2 * pas, B_half, 2 * pas, H_beta, C_half, 2 * pas);
-        //    cublasHgemmStridedBatched(handle, CUBLAS_OP_N, CUBLAS_OP_N, 2 * pas, l111*nb_node_parallel/batch_count ,2 * pas,H_alpha,A_half, 2*pas,strideA,B_half, 2*pas,strideB, H_beta, C_half,2*pas,strideC,batch_count);
-#endif
+        if (_precision == 3)
+        {
+            cublasHgemm(handle, CUBLAS_OP_N, CUBLAS_OP_N, 2 * pas, l111 * nb_node_parallel, 2 * pas, H_alpha, A_half, 2 * pas, B_half, 2 * pas, H_beta, C_half, 2 * pas);
+            //    cublasHgemmStridedBatched(handle, CUBLAS_OP_N, CUBLAS_OP_N, 2 * pas, l111*nb_node_parallel/batch_count ,2 * pas,H_alpha,A_half, 2*pas,strideA,B_half, 2*pas,strideB, H_beta, C_half,2*pas,strideC,batch_count);
+        }
+        else if (_precision == 1)
+        {
+            ExIgemmTensor(2 * pas,
+                          l111,
+                          2 * pas,
+                          A[jk].d_ptr_,
+                          2 * pas,
+                          B.d_ptr_,
+                          2 * pas,
+                          new_mat_C,
+                          // C.d_ptr_,
+                          2 * pas, _precision, handle);
+        }
+        else
+        {
+            cublasSgemm(handle, CUBLAS_OP_N, CUBLAS_OP_N, 2 * pas, l111 * nb_node_parallel, 2 * pas, alpha, new_mat_A, 2 * pas, new_mat_B, 2 * pas, beta, new_mat_C, 2 * pas);
+        }
     }
     else
     {
-#ifndef FP16MM
-        cublasSgemm(handle, CUBLAS_OP_N, CUBLAS_OP_N, 2 * pas, l111 * nb_node_parallel, 2 * pas, alpha, new_mat_A, 2 * pas, new_mat_B_1pas, 2 * pas, beta, new_mat_C, 2 * pas);
-#else
-        cublasHgemm(handle, CUBLAS_OP_N, CUBLAS_OP_N, 2 * pas, l111 * nb_node_parallel, 2 * pas, H_alpha, A_half, 2 * pas, B1_half, 2 * pas, H_beta, C_half, 2 * pas);
-#endif
+        if (_precision == 3)
+        {
+            cublasHgemm(handle, CUBLAS_OP_N, CUBLAS_OP_N, 2 * pas, l111 * nb_node_parallel, 2 * pas, H_alpha, A_half, 2 * pas, B1_half, 2 * pas, H_beta, C_half, 2 * pas);
+        }
+        else
+        {
+            cublasSgemm(handle, CUBLAS_OP_N, CUBLAS_OP_N, 2 * pas, l111 * nb_node_parallel, 2 * pas, alpha, new_mat_A, 2 * pas, new_mat_B_1pas, 2 * pas, beta, new_mat_C, 2 * pas);
+        }
     }
+    cudaEventRecord(stop, 0);
+    float cudaElapsedTime;
     gettimeofday(&mul22, NULL);
 
-    {
-        /*Norm and sorting phase*/
-        next22 = real_norme3(result_vec, Poids2, 0, pas, d1, nb_node_parallel, l111, eval1, strategy_exploration, new_mat_C, d_norme, best_nd, nb_node_parallel, new_mat_B, vec, dim1, level, new_mat_C, new_mat_B, l111, new_mat_B_1pas, C_half);
-    }
+    /*Norm and sorting phase*/
+    next22 = real_norme3(result_vec, Poids2, 0, pas, d1, nb_node_parallel, l111, eval1, strategy_exploration, new_mat_C, d_norme, best_nd, nb_node_parallel, new_mat_B, vec, dim1, level, new_mat_C, new_mat_B, l111, new_mat_B_1pas, C_half, C.d_ptr_);
 
-    if (level + pas >= dim1 /*&& eval1[0] > 0*/)
+    if (level + pas >= dim1)
     {
         {
-            dd = 1; // eval1[0];
+            dd = 1;
             found = 100;
             best_ad = complex_v_best;
         }
@@ -2255,20 +1898,9 @@ float real_node_evaluation(vector<tree_node> &list_node, vector<tree_node> &list
 
     int nb = next22.size();
 
-    { // explored_nodes++;
-
-        {
-            int ind = next22[0].indice;
-        }
-
-        {
-
-            list_temp[0].evaluation = 0; // Poids2[ind];
-            list_node.push_back(list_temp[0]);
-        }
-    }
-
-    //   free(Poids2);
+    int ind = next22[0].indice;
+    list_temp[0].evaluation = 0;
+    list_node.push_back(list_temp[0]);
 
     return dd;
 }
@@ -2281,13 +1913,9 @@ vector<float> S_to_real(vector<tree_node> mat)
 {
     r_mat.clear();
     int ind = 0;
-    // v.reserve(2*mat[0].s.size());
     r_mat.resize(2 * mat[0].s.size() * 2 * mat.size());
-    // v1.reserve(2*mat[0].s.size());
     for (int i = 0; i < mat.size(); i++)
     {
-        // v.clear();v1.clear();
-
         for (int j = 0; j < mat[i].s.size(); j++)
         {
             cuFloatComplex c;
@@ -2324,7 +1952,6 @@ vector<float> S_to_real(vector<tree_node> mat)
             ind++;
             r_mat[ind] = re_c;
             ind++;
-            //   r_mat.push_back(re_c);
         }
     }
 
@@ -2342,21 +1969,6 @@ void printMatrix2(const M &matrix, int rows, int columns)
         for (int col = 0; col < width; ++col)
         {
             std::cout << matrix[row * width + col] << " ";
-        }
-        std::cout << "\n";
-    }
-}
-
-template <class M>
-void printMatrix(const M &matrix)
-{
-    int height = matrix.shape()[0];
-    int width = matrix.shape()[1];
-    for (int row = 0; row < height; ++row)
-    {
-        for (int col = 0; col < width; ++col)
-        {
-            std::cout << matrix[row][col] << " ";
         }
         std::cout << "\n";
     }
@@ -2394,8 +2006,6 @@ vector<float> C_colomn_major(cuFloatComplex *vec, int dim)
 {
     vector<float> r_vec;
 
-    // r_vec.reserve(100);
-
     for (int i = 0; i < dim; i++)
     {
 
@@ -2416,7 +2026,6 @@ vector<float> C_colomn_major(cuFloatComplex *vec, int dim)
         r_vec.push_back(-im_c);
         r_vec.push_back(re_c);
     }
-    // for(int i=0;i<r_vec.size();i++)cout<<" "<< r_vec[i];
     return r_vec;
 }
 
@@ -2495,7 +2104,7 @@ void Channel_matrix_noise_generation(cuFloatComplex *H, cuFloatComplex *Noise, i
     }
 }
 
-int initialization(__half **_C, float **CC, __half **_A, float **AA, __half **A_half, __half **B_half, __half **C_half, float **new_mat_A, float **new_mat_B, float **new_mat_C, float **new_mat_B_1pas, __half **B1_half, int lz, int pas, int parallel_nodes, int dim1, vector<float> float_comb_v, vector<float> float_comb_v2)
+int initialization(__half **_C, float **CC, __half **_A, float **AA, __half **B_half, float **new_mat_A, float **new_mat_B, float **new_mat_C, float **new_mat_B_1pas, __half **B1_half, int lz, int pas, int parallel_nodes, int dim1, vector<float> float_comb_v, vector<float> float_comb_v2)
 {
     cudaError_t cudaStat1;
     cudaStat1 = cudaMalloc(CC, 2 * lz * pas * 2 * parallel_nodes * sizeof(float));
@@ -2504,55 +2113,46 @@ int initialization(__half **_C, float **CC, __half **_A, float **AA, __half **A_
         printf("device memory allocation failed matrix half C");
         return EXIT_FAILURE;
     }
-    cudaStat1 = cudaMalloc(_C, 2 * lz * pas * 2 * parallel_nodes * sizeof(__half));
-    if (cudaStat1 != cudaSuccess)
+    if (_precision == 3)
     {
-        printf("device memory allocation failed matrix half C");
-        return EXIT_FAILURE;
+        cudaStat1 = cudaMalloc(_C, 2 * lz * pas * 2 * parallel_nodes * sizeof(__half));
+        if (cudaStat1 != cudaSuccess)
+        {
+            printf("device memory allocation failed matrix half C");
+            return EXIT_FAILURE;
+        }
+        cudaStat1 = cudaMallocManaged(B_half, float_comb_v.size() * sizeof(__half));
+        if (cudaStat1 != cudaSuccess)
+        {
+            printf("device memory allocation failed half matrix A");
+            return EXIT_FAILURE;
+        }
+        cudaStat1 = cudaMallocManaged(B1_half, float_comb_v2.size() * sizeof(__half));
+        if (cudaStat1 != cudaSuccess)
+        {
+            printf("device memory allocation failed half matrix A");
+            return EXIT_FAILURE;
+        }
+
+        for (int i7 = 0; i7 < (dim1 / pas + (dim1 % pas)); i7++)
+        {
+            cudaStat1 = cudaMalloc(&_A[i7], 2 * pas * pas * 2 * sizeof(__half));
+            if (cudaStat1 != cudaSuccess)
+            {
+                printf("device memory allocation failed half matrix A");
+                return EXIT_FAILURE;
+            }
+        }
     }
 
     for (int i7 = 0; i7 < (dim1 / pas + (dim1 % pas)); i7++)
     {
-#ifndef FP16MM
-        // if(i7*pas<100)
-
         cudaStat1 = cudaMalloc(&AA[i7], 2 * pas * pas * 2 * sizeof(float));
         if (cudaStat1 != cudaSuccess)
         {
             printf("device memory allocation failed half matrix A");
             return EXIT_FAILURE;
         }
-#else
-        // if(i7*pas<100)
-
-        cudaStat1 = cudaMalloc(&_A[i7], 2 * pas * pas * 2 * sizeof(__half));
-        if (cudaStat1 != cudaSuccess)
-        {
-            printf("device memory allocation failed half matrix A");
-            return EXIT_FAILURE;
-        }
-#endif
-    }
-
-    cudaStat1 = cudaMalloc(A_half, 2 * pas * pas * 2 * sizeof(__half));
-    if (cudaStat1 != cudaSuccess)
-    {
-        printf("device memory allocation failed half matrix A");
-        return EXIT_FAILURE;
-    }
-
-    cudaStat1 = cudaMalloc(C_half, 2 * lz * pas * 2 * parallel_nodes * sizeof(__half));
-    if (cudaStat1 != cudaSuccess)
-    {
-        printf("device memory allocation failed matrix C");
-        return EXIT_FAILURE;
-    }
-
-    cudaStat1 = cudaMallocManaged(B_half, float_comb_v.size() * sizeof(__half));
-    if (cudaStat1 != cudaSuccess)
-    {
-        printf("device memory allocation failed half matrix A");
-        return EXIT_FAILURE;
     }
 
     cudaStat1 = cudaMalloc(new_mat_A, 2 * pas * pas * 2 * sizeof(float));
@@ -2570,21 +2170,13 @@ int initialization(__half **_C, float **CC, __half **_A, float **AA, __half **A_
         return EXIT_FAILURE;
     }
     cudaMalloc(new_mat_B_1pas, float_comb_v2.size() * sizeof(float));
-
-    cudaStat1 = cudaMallocManaged(B1_half, float_comb_v2.size() * sizeof(__half));
-    if (cudaStat1 != cudaSuccess)
-    {
-        printf("device memory allocation failed half matrix A");
-        return EXIT_FAILURE;
-    }
 }
 
 float multi_level(std::vector<cuFloatComplex> R_ad, std::vector<int8_t> nn1,
                   std::vector<cuFloatComplex> nn2, vector<tree_node> &list_node, vector<cuFloatComplex> &best_ad, int nb_node_par, double d, int dim1, int dim2, int pas,
                   const float *new_mat_A,
                   const float *new_mat_B, float *new_mat_C, float *new_mat_B_1pas,
-                  const __half *A_half,
-                  const __half *B_half, __half *C_half,
+                  const __half *B_half,
                   const __half *B1_half,
                   struct timeval &branch_start,
                   struct timeval &branch_end,
@@ -2602,15 +2194,12 @@ float multi_level(std::vector<cuFloatComplex> R_ad, std::vector<int8_t> nn1,
     best_ad = nn2;
     R_ad.clear();
     d_ad = d;
-    //    cout<< "\n matrix R\n";
     for (int ie = 0; ie < dim1; ie++)
     {
         for (int je = 0; je < dim1; je++)
         {
             R_ad.push_back(R[ie * dim1 + je]);
-            // cout<<" "<< cuCrealf(R[ie * dim1 + je])<<"+i"<<cuCimagf(R[ie * dim1 + je]);
         }
-        //   cout<<"\n";
     }
 
     vector<float> R_adf = R_to_real(R_ad, dim1, dim1);
@@ -2620,13 +2209,11 @@ float multi_level(std::vector<cuFloatComplex> R_ad, std::vector<int8_t> nn1,
     float *gpu_y_modulation;
     float *gpu_r_adf_in;
     cudaError_t cudaStat;
-    //     cout << "\nradf_in size" << R_adf.size();
     cudaMalloc(&gpu_r_adf_in, R_adf.size() * sizeof(float));
     cudaStat = cudaMemcpy(gpu_r_adf_in, R_adf.data(), R_adf.size() * sizeof(float), cudaMemcpyHostToDevice);
     if (cudaStat != cudaSuccess)
     {
-        printf("device memory allocation failed GPU r in");
-        printf("device memory allocation failed GPU r in");
+        printf("\ndevice memory allocation failed GPU r in");
         return EXIT_FAILURE;
     }
     float *H_D_eval;
@@ -2650,7 +2237,7 @@ float multi_level(std::vector<cuFloatComplex> R_ad, std::vector<int8_t> nn1,
     int nj = 0;
     for (int i9 = 0; i9 < (dim1 / pas); i9++)
     {
-        p_new_mat_A<<<1, 2 * dim1>>>(AA[i9], i9 * pas, pas, dim1, dim2, gpu_r_adf_in, _A[i9]);
+        p_new_mat_A<<<1, 2 * dim1>>>(AA[i9], i9 * pas, pas, dim1, dim2, gpu_r_adf_in, _A[i9], _precision);
         nj++;
     }
     int nf = dim1 % pas;
@@ -2658,13 +2245,25 @@ float multi_level(std::vector<cuFloatComplex> R_ad, std::vector<int8_t> nn1,
     {
         for (int i9 = nj * pas; i9 < (dim1); i9++)
         {
-            p_new_mat_A<<<1, 2 * dim1>>>(AA[nj], i9, 1, dim1, dim2, gpu_r_adf_in, _A[nj]);
+            p_new_mat_A<<<1, 2 * dim1>>>(AA[nj], i9, 1, dim1, dim2, gpu_r_adf_in, _A[nj], _precision);
 
             nj++;
         }
     }
+    // int8 conversion of matrix A i=0 to i=xxx
+    nj = 0;
+    if (_precision == 1)
+    {
+        for (int i9 = 0; i9 < (dim1 / pas); i9++)
+        {
 
-    float *gpu_vec;
+            A_2_int8<<<1, 1024>>>(AA[i9], A[i9].d_ptr_, 2 * pas * 2 * pas);
+            nj++;
+        }
+    }
+    // conversion ends here
+    float *
+        gpu_vec;
     cudaStat = cudaMalloc(&gpu_vec, nb_node_par * 2 * 2 * dim1 * sizeof(float));
     if (cudaStat != cudaSuccess)
     {
@@ -2716,7 +2315,6 @@ float multi_level(std::vector<cuFloatComplex> R_ad, std::vector<int8_t> nn1,
                 pas = 1;
                 l111 = modulation;
             }
-            //       cout << "\n jk" << jk << " nd" << node.evaluation;
             vector<tree_node> vec;
             vec.push_back(node);
             list_temp.clear();
@@ -2728,28 +2326,38 @@ float multi_level(std::vector<cuFloatComplex> R_ad, std::vector<int8_t> nn1,
             /*matrix vector multiplication */
             if (pas == steps)
             {
-                vecMul_v1<<<nb_node_parallel * 2 * pas, 2 * dim1, 0, stream1>>>(gpu_vec, gpu_r_adf_in, nb_node_parallel, dim1, pas, level, gpu_y_modulation);
+                if (_precision == 3)
+                {
+                    half_vecMul_v1<<<nb_node_parallel * 2 * pas, 2 * dim1, 0, stream1>>>(gpu_vec, gpu_r_adf_in, nb_node_parallel, dim1, pas, level, gpu_y_modulation);
+                }
+                else
+                {
+                    vecMul_v1<<<nb_node_parallel * 2 * pas, 2 * dim1, 0, stream1>>>(gpu_vec, gpu_r_adf_in, nb_node_parallel, dim1, pas, level, gpu_y_modulation);
+                }
             }
             else if (pas == 1)
             {
+                if (_precision == 3)
+                {
+                    half_vecMul_v1<<<2 * pas * nb_node_parallel, 2 * dim1, 0, stream1>>>(gpu_vec, gpu_r_adf_in, nb_node_parallel, dim1, pas, level, gpu_y_modulation);
+                }
+                else
+                {
 
-                vecMul_v1<<<2 * pas * nb_node_parallel, 2 * dim1, 0, stream1>>>(gpu_vec, gpu_r_adf_in, nb_node_parallel, dim1, pas, level, gpu_y_modulation);
+                    vecMul_v1<<<2 * pas * nb_node_parallel, 2 * dim1, 0, stream1>>>(gpu_vec, gpu_r_adf_in, nb_node_parallel, dim1, pas, level, gpu_y_modulation);
+                }
             }
             // cudaDeviceSynchronize();
             gettimeofday(&branch_end, NULL);
             list_temp = branch_nodes(vec, A2, d, pas, 1);
             /*Matrix matrix multiplication + sorting phase*/
-            float new_d = real_node_evaluation(list_node, list_temp, best_ad, level, H_D_eval, l111, dim1, dim2, pas, d, d_norme, best_nd, nb_node_parallel, gpu_vec, AA[jk], new_mat_B, CC, new_mat_B_1pas, _A[jk], B_half, _C, B1_half); // for cpu evaluation
-
+            float new_d = real_node_evaluation(list_node, list_temp, best_ad, level, H_D_eval, l111, dim1, dim2, pas, d, d_norme, best_nd, nb_node_parallel, gpu_vec, AA[jk], new_mat_B, CC, new_mat_B_1pas, _A[jk], B_half, _C, B1_half, jk); // for cpu evaluation
             elapsed_mul = elapsed_mul + (mul2.tv_sec - mul1.tv_sec) + ((mul2.tv_usec - mul1.tv_usec) / 1000000.0);
-
             elapsed_mul11 = elapsed_mul11 + (mul22.tv_sec - mul11.tv_sec) + ((mul22.tv_usec - mul11.tv_usec) / 1000000.0);
-
             elapsed_branch = elapsed_branch + (branch_end.tv_sec - branch_start.tv_sec) + ((branch_end.tv_usec - branch_start.tv_usec) / 1000000.0);
             if (level + pas >= dim1)
                 if (new_d < d - 0.000001)
                 {
-                    //   cout << "\n new d :" << new_d << " d: " << d << " level:" << level << " pas:" << pas;
                     d = new_d; // found=100;
                 }
         }
@@ -2868,24 +2476,47 @@ int simulation_muti_level(int nTx, int nRx, int Iter, int steps, int nb_nodes, i
     float *new_mat_B, *new_mat_B_1pas;
     __half *_C, *_A[500];
     float *CC, *AA[500];
-    __half *A_half, *B_half, *B1_half, *C_half;
+    __half *B_half, *B1_half;
     float *new_mat_A;
     float *new_mat_C;
     int lz = (int)pow(modulation, pas);
     // initialization of Multi-level approach
-    initialization(&_C, &CC, &_A[0], &AA[0], &A_half, &B_half, &C_half, &new_mat_A, &new_mat_B, &new_mat_C, &new_mat_B_1pas, &B1_half, lz, pas, parallel_nodes, dim1, float_comb_v, float_comb_v2);
+    initialization(&_C, &CC, &_A[0], &AA[0], &B_half, &new_mat_A, &new_mat_B, &new_mat_C, &new_mat_B_1pas, &B1_half, lz, pas, parallel_nodes, dim1, float_comb_v, float_comb_v2);
     cudaMemcpy(new_mat_B, float_comb_v.data(), float_comb_v.size() * sizeof(float), cudaMemcpyHostToDevice);
     cudaMemcpy(new_mat_B_1pas, float_comb_v2.data(), float_comb_v2.size() * sizeof(float), cudaMemcpyHostToDevice);
-    for (int i = 0; i < float_comb_v.size(); i++)
+    if (_precision == 3)
     {
-        B_half[i] = __float2half(float_comb_v[i]);
-    }
-    for (int i = 0; i < float_comb_v2.size(); i++)
-    {
-        B1_half[i] = __float2half(float_comb_v2[i]);
+        for (int i = 0; i < float_comb_v.size(); i++)
+        {
+            B_half[i] = __float2half(float_comb_v[i]);
+        }
+        for (int i = 0; i < float_comb_v2.size(); i++)
+        {
+            B1_half[i] = __float2half(float_comb_v2[i]);
+        }
     }
 
     A2 = &BB[0];
+
+    if (_precision == 1)
+    {
+        for (int u = 0; u < (dim1 / pas); u++)
+        {
+            // cout << "\ninitialization";
+            A[u].init(2 * pas * 2 * pas);
+        }
+
+        B.init(2 * pas * lz);
+        B1pas.init(float_comb_v2.size());
+        C.init(2 * pas * lz);
+
+        int di = 1;
+        if ((2 * pas * lz) > 1024)
+            di = (2 * pas * lz) / 1024 + 1;
+
+        B_2_int_x<<<di, 1024>>>(new_mat_B, B.d_ptr_, 2 * pas * lz);
+        B_2_int_x<<<1, 1024>>>(new_mat_B_1pas, B1pas.d_ptr_, float_comb_v2.size());
+    }
 
     // allocate and initialize cpu memory
     H = (cuFloatComplex *)malloc(matrix_size1 * sizeof(cuFloatComplex)); // matrice du canal
@@ -2916,9 +2547,9 @@ int simulation_muti_level(int nTx, int nRx, int Iter, int steps, int nb_nodes, i
     SNRdb[4] = 16.0;
     SNRdb[5] = 20.0;
     SNRdb[6] = 24.0;
-    SNRdb[7] = 26.0;
-    SNRdb[8] = 30.0;
-    SNRdb[9] = 31.0;
+    SNRdb[7] = 28.0;
+    SNRdb[8] = 32.0;
+    SNRdb[9] = 32.0;
     SNRdb[10] = 32.0;
     SNRdb[11] = 23;
     SNRdb[12] = 28.0;
@@ -2953,10 +2584,8 @@ int simulation_muti_level(int nTx, int nRx, int Iter, int steps, int nb_nodes, i
         }
         QR_decomposition(Q1, R, R1, dim1, dim2);
         /* end of Channel matrix, noise vector, and QR decomposition */
-       // int ii = 0;
-       // if (jj > 2000)
-       //     ii = 4;
-        for (int ii=0; ii < 9; ii++) // Changing the SNR
+
+        for (int ii = 7; ii < 8; ii++) // Changing the SNR
         {
 
             double variance = dim1 * pow(10.0, -((SNRdb[ii]) / 10)); // noise according to SNR
@@ -3055,8 +2684,7 @@ int simulation_muti_level(int nTx, int nRx, int Iter, int steps, int nb_nodes, i
                         nn2, list_node, best_ad, nb_node_par, d, dim1, dim2, pas,
                         new_mat_A,
                         new_mat_B, new_mat_C, new_mat_B_1pas,
-                        A_half,
-                        B_half, C_half,
+                        B_half,
                         B1_half,
                         branch_start,
                         branch_end,
@@ -3072,7 +2700,7 @@ int simulation_muti_level(int nTx, int nRx, int Iter, int steps, int nb_nodes, i
 
             double elapsed_preparation = (end_pr.tv_sec - start_pr.tv_sec) + ((end_pr.tv_usec - start_pr.tv_usec) / 1000000.0);
             double t1_pr = elapsed_preparation;
-            if (jj == 10 & ii==0)
+            if (jj == 10 & ii == 0)
                 cout << "\n elapsed preparation:" << t1_pr;
 
             d = d_ad;
@@ -3103,10 +2731,10 @@ int simulation_muti_level(int nTx, int nRx, int Iter, int steps, int nb_nodes, i
             }
         }
     }
-   
+
     cout
         << left
-        << setw(20)
+        << setw(30)
         << "\n SNR"
         << left
         << setw(25)
@@ -3116,27 +2744,36 @@ int simulation_muti_level(int nTx, int nRx, int Iter, int steps, int nb_nodes, i
         << "Error rate"
         << endl;
 
-    for (int ii = 0; ii < 9; ii++)
-    {      T_ad[ii] = T_ad[ii] / (Iter);
+    for (int ii = 0; ii < 10; ii++)
+    {
+        T_ad[ii] = T_ad[ii] / (Iter);
         BER_ad[ii] = BER_ad[ii] / (dim1 * Iter * 1 * nbit / nbit);
-          cout
+        cout
             << left
-            << setw(20)
-            << SNRdb[ii]
+            << setw(30)
+            << (int)SNRdb[ii]
             << left
             << setw(25)
-            << T_ad[ii] 
+            << T_ad[ii]
             << left
             << setw(28)
-            << BER_ad[ii] 
+            << BER_ad[ii]
             << endl;
-   
+
         //   cout << "\nmul: " << elapsed_mul / Iter << " branch:" << elapsed_branch / (Iter);
         // cout << "\n matrix multiplication: " << elapsed_mul11 / (Iter) << " branch:" << elapsed_branch / (Iter);
-     //   printf("\n time:%f ii %d", T_ad[ii], ii);
-      //  printf("\n Ber_ad[%d(%fdb)] = %.15f ", ii, SNRdb[ii], BER_ad[ii]);
+        //   printf("\n time:%f ii %d", T_ad[ii], ii);
+        //  printf("\n Ber_ad[%d(%fdb)] = %.15f ", ii, SNRdb[ii], BER_ad[ii]);
         //    }
     }
+    for (int u = 0; u < dim1 / pas; u++)
+    {
+        cudaFree(A[u].d_ptr_);
+    }
+
+    cudaFree(B.d_ptr_);
+    cudaFree(B1pas.d_ptr_);
+    cudaFree(C.d_ptr_);
     cudaFree(gpu_comb);
     cudaFree(gpu_comb_1pas);
     cudaFree(new_mat_B);
@@ -3153,13 +2790,16 @@ int simulation_muti_level(int nTx, int nRx, int Iter, int steps, int nb_nodes, i
     cudaFree(CC);
     for (int i = 0; i < (dim1 / steps + (dim1 % steps)); i++)
     {
-#ifndef FP16MM
+        if (_precision == 3)
+        {
 
-        cudaFree(AA[i]);
-#else
+            cudaFree(AA[i]);
+        }
+        else
+        {
 
-        cudaFree(_A[i]);
-#endif
+            cudaFree(_A[i]);
+        }
     }
     return 0;
 }
@@ -3167,21 +2807,15 @@ int simulation_muti_level(int nTx, int nRx, int Iter, int steps, int nb_nodes, i
 // CPU code
 int main(int argc, char *argv[])
 {
+    char precision;
     sscanf(argv[1], "%d", &nTx);
     sscanf(argv[2], "%d", &nRx);
     sscanf(argv[3], "%d", &steps);
     sscanf(argv[4], "%d", &Iter);
     sscanf(argv[5], "%d", &modulation);
-    sscanf(argv[6], "%d", &parallel_nodes);
+    sscanf(argv[6], "%c", &precision);
 
-#ifndef FP16MM
-    cout << "\nrunning cublasSgemm test\n"
-         << endl;
-#else
-    cout << "\nrunning half precision mode cublasHgemm test\n"
-         << endl;
-#endif
-
+    parallel_nodes = 1;
     sort_size = parallel_nodes;
     printf("\nnew GPU multi-level MIMO System : %dx%d ", nTx, nRx);
     if (strategy_exploration == 3)
@@ -3196,13 +2830,30 @@ int main(int argc, char *argv[])
     printf("\n number iteration:%d", Iter);
     printf("\n number threads:%d", nb_threads);
     printf("\n modulation:%d", modulation);
-    printf("\n parallel nodes:%d", parallel_nodes);
+    printf("\n precision:%c", precision);
     int dev = 0;
     cudaError_t err = cudaSetDevice(dev);
     if (err == cudaSuccess)
     {
         cout << "\n GPU device " << dev << " set  succesfully";
     }
+
+    if (precision == 'h')
+    {
+        _precision = 3;
+        cout << "\nrunning half precision FP16 \n";
+    }
+    else if (precision == 'i')
+    {
+        _precision = 1;
+        cout << "\nrunning INT8 precision 8 bits \n";
+    }
+    else
+    {
+        _precision = 2;
+        cout << "\nrunning single precision FP32 \n";
+    }
+
     if (nTx == nRx && nTx > 5)
     {
         simulation_muti_level(nTx, nRx, Iter, steps, nb_nodes, nb_threads, argc, argv);
@@ -3213,4 +2864,4 @@ int main(int argc, char *argv[])
     }
 
     return 0;
-}    
+}

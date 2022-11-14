@@ -23,9 +23,10 @@ For older GPU architectures update the makefile accordengly. For instance: CC= n
 
 ## 6. Tests
 To execute the code please specify the MIMO configuration in Execution_script_multi_level.sh
-###### Single-precision mode (FP32)
+###### Single-precision mode (FP32), Half-precision (FP16), and INT8 precision.
 bash Execution_script_multi_level.sh 
 
 ## 7. Handout
 
+![image](https://user-images.githubusercontent.com/27140713/201114953-9b7151f0-0673-4a65-b19a-bc53908906ac.png)
 
